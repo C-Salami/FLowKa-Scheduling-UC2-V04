@@ -1,0 +1,5 @@
+line_id,name,type,description
+MIX_1,Mixing/Processing,MIX,Large tanks with high-shear mixers and homogenizers under temperature/vacuum control.
+TRANS_1,Transfer/Holding,TRANS,Pumps to buffer tanks for holding before bottling.
+FILL_1,Filling/Capping,FILL,Automated filling and capping machines for precise volumes and secure seals.
+FIN_1,Finishing/QC,FIN,"Labeling, checkweighers, QC (viscosity, pH) before packing."
