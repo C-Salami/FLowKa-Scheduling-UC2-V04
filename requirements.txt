@@ -10,3 +10,4 @@ pytz>=2024.1
 packaging>=24.0
 wheel>=0.43.0
 setuptools>=70.0.0
+streamlit-mic-recorder
