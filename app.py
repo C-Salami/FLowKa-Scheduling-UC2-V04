@@ -12,6 +12,9 @@ from streamlit_mic_recorder import mic_recorder
 
 
 # ============================ PAGE & SECRETS ============================
+
+
+
 st.set_page_config(page_title="Bulk Production Scheduler", layout="wide")
 
 st.markdown("""
@@ -44,6 +47,9 @@ except Exception:
 
 
 # ============================ DATA LOADING ============================
+
+
+
 @st.cache_data
 def load_and_generate_data():
     orders_df = pd.read_csv("data/orders.csv", parse_dates=["due_date"])
@@ -59,7 +65,7 @@ def load_and_generate_data():
     
     line_map = {
         'MIX': 'MIX_1',
-        'TRF': 'TRF_1', 
+        'TRF': 'TRANS_1', 
         'FILL': 'FILL_1',
         'FIN': 'FIN_1'
     }
