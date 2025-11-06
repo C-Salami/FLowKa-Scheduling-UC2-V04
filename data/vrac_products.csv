@@ -1,4 +1,6 @@
 sku_id,name,family,uom,mix_rate_kg_per_h,transfer_rate_kg_per_h,fill_rate_kg_per_h,finish_rate_kg_per_h
-VRAC_SHAMPOO_BASE,Vrac Shampoo Base,Shampoo,kg,6000,15000,5000,20000
-VRAC_CONDITIONER_BASE,Vrac Conditioner Base,Conditioner,kg,5000,15000,4500,18000
-VRAC_HAIR_MASK,Vrac Hair Mask,Mask,kg,4000,12000,3500,16000
+SHAMPOO_BASE,Vrac Shampoo Base,Shampoo,kg,6000,15000,5000,20000
+CONDITIONER_BASE,Vrac Conditioner Base,Conditioner,kg,5000,15000,4500,18000
+HAIR_MASK,Vrac Hair Mask,Mask,kg,4000,12000,3500,16000
+HAND_SOAP_BASE,Vrac Hand Soap Base,Soap,kg,5800,14500,4800,19000
+BODY_WASH_BASE,Vrac Body Wash Base,Body Wash,kg,5700,9000,4450,20000
