@@ -12,7 +12,6 @@ from streamlit_mic_recorder import mic_recorder
 from nlp_extractor import ai_extract_intent
 
 
-
 # ============================ PAGE & SECRETS ============================
 
 st.set_page_config(page_title="Bulk Production Scheduler", layout="wide")
@@ -160,6 +159,8 @@ if "last_transcript" not in st.session_state:
     st.session_state.last_transcript = None
 if "prompt_text" not in st.session_state:
     st.session_state.prompt_text = ""
+if "do_rerun" not in st.session_state:
+    st.session_state.do_rerun = False
 
 
 # ============================ SIDEBAR / HEADER ============================
@@ -199,7 +200,6 @@ if st.session_state.filters_visible:
         st.session_state.filt_products = st.multiselect(
             "Products",
             products_all,
-            # default: no pre-selection; logic below will still treat "none" as "all"
             default=st.session_state.filt_products,
             key="product_ms",
         )
@@ -233,7 +233,7 @@ if st.session_state.filters_visible:
             st.session_state.schedule_df = base_schedule.copy()
             st.rerun()
         
-        # === Rich Debug (inspired by UC2-V03 style) ===
+        # === Rich Debug / Trace ===
         with st.expander("🐛 Debug / Trace", expanded=False):
             if st.session_state.last_transcript:
                 st.caption("**Last transcript (voice):**")
@@ -306,7 +306,7 @@ NUM_WORDS = {
 
 # Pattern to normalize order references "order 1", "Order one", "ord-3", etc.
 ORDER_REF_RE = re.compile(
-    r"\b(ord(?:er)?)\s*(?:number\s*)?(?P<num>\d{{1,3}}|\w+)\b",
+    r"\b(ord(?:er)?)\s*(?:number\s*)?(?P<num>\d{1,3}|\w+)\b",
     flags=re.I,
 )
 
@@ -446,15 +446,6 @@ def _regex_fallback(user_text: str):
     
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
-
-# def extract_intent(user_text: str) -> dict:
-#    """
-#    Entry point for NLU:
-#      1) Normalize order references (Order 1 → ORD-001)
-#      2) Apply regex extractor
-#      3) (Future) could plug an LLM-based extractor if needed
-#    """
-#    return _regex_fallback(user_text)
 
 def extract_intent(user_text: str) -> dict:
     user_text = normalize_order_references(user_text)
@@ -715,7 +706,7 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         # 1) Normalize order references for both text & voice
         normalized = normalize_order_references(cmd_text)
 
-        # 2) Extract intent on normalized text
+        # 2) Extract intent on normalized text (regex + OpenAI fallback)
         payload = extract_intent(normalized)
 
         # 3) Validate vs current data
@@ -756,7 +747,10 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 payload["order_id_2"],
             )
             st.success(f"✅ Swapped {payload['order_id']} ↔ {payload['order_id_2']}")
-        st.rerun()
+        
+        # ask for one rerun at end of script
+        st.session_state.do_rerun = True
+
     except Exception as e:
         st.error(f"⚠️ Error: {e}")
 
@@ -767,25 +761,30 @@ st.markdown("---")
 prompt_container = st.container()
 
 with prompt_container:
-    c1, c2 = st.columns([0.18, 0.82])  # mic + prompt bar in one row
+    # prompt left, mic right
+    c1, c2 = st.columns([0.82, 0.18])
 
     with c1:
-        st.markdown("**🎤 Voice**")
-        rec = mic_recorder(
-            start_prompt="🎙️",
-            stop_prompt="⏹️",
-            key="voice_mic",
-            just_once=False,
-            format="wav",
-            use_container_width=True
-        )
-
-    with c2:
         st.markdown("**🧠 Command**")
         user_cmd = st.text_input(
             "Type: delay / advance / swap orders…",
             key="prompt_text",
             label_visibility="collapsed",
+        )
+
+    with c2:
+        st.markdown(
+            "<div style='text-align:right; font-size:0.8rem; "
+            "margin-bottom:0.25rem;'>🎤 Voice</div>",
+            unsafe_allow_html=True,
+        )
+        rec = mic_recorder(
+            start_prompt="●",   # minimal round icon style
+            stop_prompt="■",
+            key="voice_mic",
+            just_once=False,
+            format="wav",
+            use_container_width=False,  # keep it compact
         )
 
 # Handle voice
@@ -810,3 +809,8 @@ if user_cmd:
     _process_and_apply(user_cmd, source_hint="text")
     # Clear the box on next run
     st.session_state.prompt_text = ""
+
+# Single rerun after successful command to refresh Gantt above
+if st.session_state.get("do_rerun"):
+    st.session_state.do_rerun = False
+    st.rerun()
