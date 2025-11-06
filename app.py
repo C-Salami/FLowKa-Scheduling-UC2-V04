@@ -58,11 +58,8 @@ def load_and_generate_data():
         'VRAC_HAIR_MASK': {'MIX': 0.130, 'TRF': 0.110, 'FILL': 0.100, 'FIN': 0.070}
     }
     
-    # Map line_id -> nice name (Mixing/Processing, Transfer/Holding, etc.)
     machine_names = {row['line_id']: row['name'] for _, row in lines_df.iterrows()}
     
-    # Logical operation -> physical line
-    # NOTE: align with data/lines.csv (TRANS_1 not TRF_1)
     line_map = {
         'MIX': 'MIX_1',
         'TRF': 'TRANS_1',
@@ -71,12 +68,9 @@ def load_and_generate_data():
     }
     
     schedule_rows = []
-
-    # Start horizon
     base_start = datetime(2025, 11, 3, 6, 0)
     machine_timeline = {v: base_start for v in line_map.values()}
 
-    # Sort orders by due date then ID
     orders_sorted = orders_df.sort_values(['due_date', 'order_id']).reset_index(drop=True)
     
     for idx, order in orders_sorted.iterrows():
@@ -85,12 +79,8 @@ def load_and_generate_data():
         qty = order['qty_kg']
         due = order['due_date']
         
-        # If unknown sku, fall back to shampoo profile
         percentages = time_percentages.get(sku, time_percentages['VRAC_SHAMPOO_BASE'])
-
-        # Stretch factor so that 12 orders spread over several days
-        # (qty / 300 instead of qty / 1000)
-        base_time = qty / 300.0  # "pseudo-hours" per order
+        base_time = qty / 300.0  # stretched to see ~1 week
 
         operations = [
             ('MIX', percentages['MIX'], 1),
@@ -159,8 +149,8 @@ if "last_transcript" not in st.session_state:
     st.session_state.last_transcript = None
 if "prompt_text" not in st.session_state:
     st.session_state.prompt_text = ""
-if "do_rerun" not in st.session_state:
-    st.session_state.do_rerun = False
+if "last_processed_cmd" not in st.session_state:
+    st.session_state.last_processed_cmd = None
 
 
 # ============================ SIDEBAR / HEADER ============================
@@ -218,7 +208,7 @@ if st.session_state.filters_visible:
             color_options,
             index=color_options.index(st.session_state.color_mode)
             if st.session_state.color_mode in color_options
-            else 1,  # default: Product
+            else 1,
             key="color_mode_sb",
         )
         
@@ -233,14 +223,16 @@ if st.session_state.filters_visible:
             st.session_state.schedule_df = base_schedule.copy()
             st.rerun()
         
-        # === Rich Debug / Trace ===
-        with st.expander("🐛 Debug / Trace", expanded=False):
+        # === Voice-only debug ===
+        with st.expander("🎙 Voice Debug", expanded=False):
             if st.session_state.last_transcript:
-                st.caption("**Last transcript (voice):**")
+                st.caption("**Last transcript from Deepgram:**")
                 st.code(st.session_state.last_transcript)
             else:
                 st.caption("No transcript yet.")
-            
+
+        # === Command / OpenAI debug ===
+        with st.expander("🤖 Command / OpenAI Debug", expanded=False):
             if st.session_state.cmd_log:
                 last = st.session_state.cmd_log[-1]
                 st.markdown("**Last command:**")
@@ -254,10 +246,9 @@ if st.session_state.filters_visible:
                 st.markdown(
                     f"- Status: {'✅ OK' if last.get('ok') else '❌ Error'} — {last.get('msg','')}"
                 )
-                st.caption("Payload:")
+                st.caption("Payload (incl. intent / days / hours / minutes):")
                 st.json(last.get("payload", {}))
 
-                # History table (last ~10 commands)
                 hist = st.session_state.cmd_log[-10:]
                 hist_rows = []
                 for h in hist:
@@ -304,7 +295,6 @@ NUM_WORDS = {
     "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
 }
 
-# Pattern to normalize order references "order 1", "Order one", "ord-3", etc.
 ORDER_REF_RE = re.compile(
     r"\b(ord(?:er)?)\s*(?:number\s*)?(?P<num>\d{1,3}|\w+)\b",
     flags=re.I,
@@ -325,11 +315,6 @@ def _num_token_to_float(tok: str):
 
 
 def normalize_order_references(text: str) -> str:
-    """
-    Convert variations like:
-    - 'order 1', 'order one', 'ord 7', 'order number 15'
-    into canonical IDs: 'ORD-001' .. 'ORD-100'
-    """
     def repl(m: re.Match) -> str:
         raw = m.group("num")
         n = None
@@ -343,10 +328,8 @@ def normalize_order_references(text: str) -> str:
             return m.group(0)
         return f"ORD-{n:03d}"
 
-    # main pattern: "order X"
     new_text = ORDER_REF_RE.sub(repl, text)
 
-    # Optionally, support bare '#1' → ORD-001 when it's clearly an order ref
     def repl_hash(m: re.Match) -> str:
         num = m.group(1)
         if not num.isdigit():
@@ -381,16 +364,9 @@ def _parse_duration_chunks(text: str):
 
 
 def _regex_fallback(user_text: str):
-    """
-    Lightweight rule-based extractor for:
-      - swap ORD-001 with ORD-005
-      - delay ORD-003 by 2 days / 5 hours
-    Works on already-normalized order IDs (ORD-001 etc.).
-    """
     t = user_text.strip()
     low = t.lower()
     
-    # swap ORD-001 with ORD-005
     m = re.search(
         r"(?:^|\b)(swap|switch)\s+(ord-\d{3})\s*(?:with|and|&)?\s*(ord-\d{3})\b",
         low,
@@ -403,7 +379,6 @@ def _regex_fallback(user_text: str):
             "_source": "regex",
         }
     
-    # delay / advance (advance = negative delay)
     delay_sign = +1
     if re.search(r"\b(advance|bring\s+forward|pull\s+in)\b", low):
         delay_sign = -1
@@ -426,7 +401,6 @@ def _regex_fallback(user_text: str):
                 "_source": "regex",
             }
     
-    # fallback if we just see "delay ORD-001 2 days"
     m = re.search(
         r"(delay|push|postpone)\s+(ord-\d{3}).*?(days?|d|hours?|h|minutes?|mins?|m)\b",
         low_norm,
@@ -447,12 +421,14 @@ def _regex_fallback(user_text: str):
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
 
-def extract_intent(user_text: str) -> dict:
-    user_text = normalize_order_references(user_text)
-    payload = _regex_fallback(user_text)
+def extract_intent(normalized_text: str) -> dict:
+    """
+    normalized_text is already passed through normalize_order_references.
+    """
+    payload = _regex_fallback(normalized_text)
     if payload.get("intent") == "unknown":
-        ai_payload = ai_extract_intent(user_text)
-        ai_payload["_source"] = "openai"
+        ai_payload = ai_extract_intent(normalized_text)
+        ai_payload["_source"] = ai_payload.get("_source", "openai")
         return ai_payload
     return payload
 
@@ -703,13 +679,9 @@ def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") ->
 def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     from copy import deepcopy
     try:
-        # 1) Normalize order references for both text & voice
         normalized = normalize_order_references(cmd_text)
-
-        # 2) Extract intent on normalized text (regex + OpenAI fallback)
         payload = extract_intent(normalized)
 
-        # 3) Validate vs current data
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
         
         log_payload = deepcopy(payload)
@@ -747,10 +719,6 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 payload["order_id_2"],
             )
             st.success(f"✅ Swapped {payload['order_id']} ↔ {payload['order_id_2']}")
-        
-        # ask for one rerun at end of script
-        st.session_state.do_rerun = True
-
     except Exception as e:
         st.error(f"⚠️ Error: {e}")
 
@@ -761,7 +729,6 @@ st.markdown("---")
 prompt_container = st.container()
 
 with prompt_container:
-    # prompt left, mic right
     c1, c2 = st.columns([0.82, 0.18])
 
     with c1:
@@ -779,15 +746,15 @@ with prompt_container:
             unsafe_allow_html=True,
         )
         rec = mic_recorder(
-            start_prompt="●",   # minimal round icon style
+            start_prompt="●",
             stop_prompt="■",
             key="voice_mic",
             just_once=False,
             format="wav",
-            use_container_width=False,  # keep it compact
+            use_container_width=False,
         )
 
-# Handle voice
+# Voice: one shot per unique audio fingerprint
 if rec and isinstance(rec, dict) and rec.get("bytes"):
     wav_bytes = rec["bytes"]
     fp = (len(wav_bytes), hash(wav_bytes[:1024]))
@@ -804,13 +771,7 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
         except Exception as e:
             st.error(f"Transcription failed: {e}")
 
-# Handle typed text
-if user_cmd:
+# Text: process once per new command string
+if user_cmd and user_cmd != st.session_state.last_processed_cmd:
     _process_and_apply(user_cmd, source_hint="text")
-    # Clear the box on next run
-    st.session_state.prompt_text = ""
-
-# Single rerun after successful command to refresh Gantt above
-if st.session_state.get("do_rerun"):
-    st.session_state.do_rerun = False
-    st.rerun()
+    st.session_state.last_processed_cmd = user_cmd
