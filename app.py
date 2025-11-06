@@ -20,7 +20,7 @@ st.markdown("""
 <style>
 .main .block-container {
     padding-top: 0.3rem;
-    padding-bottom: 120px;
+    padding-bottom: 0.3rem;
     padding-left: 0.6rem;
     padding-right: 0.6rem;
     max-width: 100%;
@@ -30,122 +30,6 @@ header[data-testid="stHeader"] {
 }
 #MainMenu, footer {
     visibility: hidden;
-}
-
-/* Bottom prompt bar - fixed at bottom */
-.bottom-prompt-wrap {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 1000;
-    background: linear-gradient(to top, rgba(255,255,255,0.98), rgba(255,255,255,0.75));
-    padding: 18px 0 24px 0;
-    border-top: 1px solid #e6e6e6;
-}
-
-.bottom-prompt-inner {
-    max-width: 980px;
-    margin: 0 auto;
-    padding: 0 24px;
-    display: grid;
-    grid-template-columns: 1fr auto auto;
-    align-items: center;
-    gap: 12px;
-}
-
-/* Text input styling */
-.prompt-input-wrapper {
-    position: relative;
-}
-
-.prompt-input-wrapper input {
-    width: 100%;
-    padding: 12px 50px 12px 16px;
-    border: 1px solid #ddd;
-    border-radius: 12px;
-    font-size: 14px;
-    background: #fbfbfb;
-}
-
-.prompt-input-wrapper input::placeholder {
-    color: #888;
-}
-
-/* Enter button - triangle shape */
-.enter-btn {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 32px;
-    height: 32px;
-    background: #000;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.enter-btn:hover {
-    background: #333;
-}
-
-.enter-btn::after {
-    content: "";
-    width: 0;
-    height: 0;
-    border-left: 8px solid white;
-    border-top: 6px solid transparent;
-    border-bottom: 6px solid transparent;
-    margin-left: 2px;
-}
-
-/* Mic button styling - minimalist circle */
-.mic-wrap {
-    position: relative;
-    width: 52px;
-    height: 52px;
-}
-
-.mic-wrap > div {
-    width: 52px !important;
-    height: 52px !important;
-}
-
-.mic-wrap button,
-.mic-wrap [role="button"] {
-    width: 52px !important;
-    height: 52px !important;
-    padding: 0 !important;
-    border-radius: 50% !important;
-    background: radial-gradient(ellipse at 30% 30%, #ffffff 0%, #f7f7f7 60%, #efefef 100%) !important;
-    border: 1px solid #e0e0e0 !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
-    font-size: 18px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-.mic-wrap button:hover,
-.mic-wrap [role="button"]:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(0,0,0,0.15) !important;
-}
-
-/* Hide mic recorder labels and checkboxes */
-.mic-wrap input[type="checkbox"],
-.mic-wrap label {
-    display: none !important;
-}
-
-/* Override any text content in the button */
-.mic-wrap button > *:not(svg),
-.mic-wrap [role="button"] > *:not(svg) {
-    display: none;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -196,7 +80,7 @@ def load_and_generate_data():
         due = order['due_date']
         
         percentages = time_percentages.get(sku, time_percentages['VRAC_SHAMPOO_BASE'])
-        base_time = qty / 300.0
+        base_time = qty / 300.0  # stretched to see ~1 week
 
         operations = [
             ('MIX', percentages['MIX'], 1),
@@ -267,6 +151,8 @@ if "prompt_text" not in st.session_state:
     st.session_state.prompt_text = ""
 if "last_processed_cmd" not in st.session_state:
     st.session_state.last_processed_cmd = None
+if "active_order" not in st.session_state:
+    st.session_state.active_order = None
 
 
 # ============================ SIDEBAR / HEADER ============================
@@ -339,6 +225,7 @@ if st.session_state.filters_visible:
             st.session_state.schedule_df = base_schedule.copy()
             st.rerun()
         
+        # === Voice-only debug ===
         with st.expander("🎙 Voice Debug", expanded=False):
             if st.session_state.last_transcript:
                 st.caption("**Last transcript from Deepgram:**")
@@ -346,6 +233,7 @@ if st.session_state.filters_visible:
             else:
                 st.caption("No transcript yet.")
 
+        # === Command / OpenAI debug ===
         with st.expander("🤖 Command / OpenAI Debug", expanded=False):
             if st.session_state.cmd_log:
                 last = st.session_state.cmd_log[-1]
@@ -355,6 +243,8 @@ if st.session_state.filters_visible:
                     f"from **{last.get('source', '?')}**"
                 )
                 st.markdown(f"- Raw: `{last.get('raw', '')}`")
+                if last.get("enriched") and last["enriched"] != last.get("raw", ""):
+                    st.markdown(f"- Enriched: `{last['enriched']}`")
                 if last.get("normalized") and last["normalized"] != last.get("raw", ""):
                     st.markdown(f"- Normalized: `{last['normalized']}`")
                 st.markdown(
@@ -535,7 +425,35 @@ def _regex_fallback(user_text: str):
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
 
+def inject_active_order_reference(text: str, active_order: str = None) -> str:
+    """
+    Replace 'this / this order / this one' with the currently active order,
+    but only if there is no explicit ORD-xxx already in the text.
+    """
+    if not active_order:
+        return text
+
+    low = text.lower()
+    if "ord-" in low:
+        return text
+
+    patterns = [
+        r"\bthis order\b",
+        r"\bthis one\b",
+        r"\bthis\b",
+    ]
+
+    new_text = text
+    for pat in patterns:
+        new_text = re.sub(pat, active_order, new_text, flags=re.I)
+
+    return new_text
+
+
 def extract_intent(normalized_text: str) -> dict:
+    """
+    normalized_text is already passed through normalize_order_references.
+    """
     payload = _regex_fallback(normalized_text)
     if payload.get("intent") == "unknown":
         ai_payload = ai_extract_intent(normalized_text)
@@ -650,9 +568,33 @@ order_priority = (
 keep_ids = order_priority["order_id"].head(max_orders).tolist()
 sched = sched[sched["order_id"].isin(keep_ids)].copy()
 
+visible_orders = sorted(sched["order_id"].unique()) if not sched.empty else []
+
+# keep active_order consistent with visible orders
+if visible_orders:
+    if st.session_state.active_order not in visible_orders:
+        st.session_state.active_order = visible_orders[0]
+else:
+    st.session_state.active_order = None
+
 if sched.empty:
     st.info("No operations match filters")
 else:
+    # Active order selector
+    if visible_orders:
+        st.markdown("**🎯 Active order for 'this' commands**")
+        st.session_state.active_order = st.selectbox(
+            "Active order",
+            visible_orders,
+            index=visible_orders.index(st.session_state.active_order)
+            if st.session_state.active_order in visible_orders else 0,
+            key="active_order_sb",
+            label_visibility="collapsed",
+        )
+        st.caption(
+            f"Commands like *'delay this by 4 hours'* will use **{st.session_state.active_order}**."
+        )
+
     unique_orders = sorted(sched["order_id"].unique())
     color_palette = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -790,7 +732,14 @@ def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") ->
 def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     from copy import deepcopy
     try:
-        normalized = normalize_order_references(cmd_text)
+        # 1) Inject active order when user says "this / this order / this one"
+        active_order = st.session_state.get("active_order")
+        enriched = inject_active_order_reference(cmd_text, active_order)
+
+        # 2) Normalize order references (Order 1 → ORD-001, etc.)
+        normalized = normalize_order_references(enriched)
+
+        # 3) Extract intent (regex + OpenAI)
         payload = extract_intent(normalized)
 
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
@@ -798,6 +747,7 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         log_payload = deepcopy(payload)
         st.session_state.cmd_log.append({
             "raw": cmd_text,
+            "enriched": enriched,
             "normalized": normalized,
             "payload": log_payload,
             "ok": bool(ok),
@@ -834,38 +784,39 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         st.error(f"⚠️ Error: {e}")
 
 
-# ============================ BOTTOM PROMPT BAR (STYLED) =========================
+# ============================ VOICE + TEXT PROMPT BAR =========================
 
-st.markdown('<div class="bottom-prompt-wrap"><div class="bottom-prompt-inner">', unsafe_allow_html=True)
+st.markdown("---")
+prompt_container = st.container()
 
-# Text input with enter button
-col1, col2 = st.columns([0.88, 0.12])
+with prompt_container:
+    # text input + send button + mic all in one row
+    c1, c2, c3 = st.columns([0.72, 0.08, 0.20])
 
-with col1:
-    st.markdown('<div class="prompt-input-wrapper">', unsafe_allow_html=True)
-    user_cmd = st.text_input(
-        "Command",
-        value=st.session_state.prompt_text,
-        placeholder="delay / advance / swap orders…",
-        key="prompt_input",
-        label_visibility="collapsed",
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    with c1:
+        user_cmd = st.text_input(
+            "Type: delay / advance / swap orders…",
+            key="prompt_text",
+            label_visibility="collapsed",
+        )
 
-# Mic button
-with col2:
-    st.markdown('<div class="mic-wrap">', unsafe_allow_html=True)
-    rec = mic_recorder(
-        start_prompt="●",
-        stop_prompt="■",
-        key="voice_mic",
-        just_once=False,
-        format="wav",
-        use_container_width=False
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    with c2:
+        send_clicked = st.button("➤", key="send_cmd")
 
-st.markdown('</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(
+            "<div style='text-align:right; font-size:0.8rem; "
+            "margin-bottom:0.25rem;'>🎤 Voice</div>",
+            unsafe_allow_html=True,
+        )
+        rec = mic_recorder(
+            start_prompt="●",
+            stop_prompt="■",
+            key="voice_mic",
+            just_once=False,
+            format="wav",
+            use_container_width=False,
+        )
 
 # Voice: one shot per unique audio fingerprint
 if rec and isinstance(rec, dict) and rec.get("bytes"):
@@ -879,15 +830,16 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
             st.session_state.last_transcript = transcript
             if transcript:
                 _process_and_apply(transcript, source_hint="voice/deepgram")
-                st.rerun()
+                st.rerun()  # rerun AFTER applying voice command
             else:
                 st.warning("No speech detected.")
         except Exception as e:
             st.error(f"Transcription failed: {e}")
 
-# Text: process once per new command string
-if user_cmd and user_cmd != st.session_state.last_processed_cmd:
-    st.session_state.last_processed_cmd = user_cmd
-    _process_and_apply(user_cmd, source_hint="text")
-    st.session_state.prompt_text = ""
-    st.rerun()
+# Text: process only when send button is clicked
+if send_clicked and user_cmd:
+    if user_cmd != st.session_state.last_processed_cmd:
+        st.session_state.last_processed_cmd = user_cmd   # mark as processed
+        _process_and_apply(user_cmd, source_hint="text")
+        st.session_state.prompt_text = ""                # clear input box
+        st.rerun()                                       # rerun AFTER applying text command
