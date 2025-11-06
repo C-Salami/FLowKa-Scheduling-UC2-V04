@@ -20,7 +20,7 @@ st.markdown("""
 <style>
 .main .block-container {
     padding-top: 0.3rem;
-    padding-bottom: 0.3rem;
+    padding-bottom: 120px;
     padding-left: 0.6rem;
     padding-right: 0.6rem;
     max-width: 100%;
@@ -30,6 +30,122 @@ header[data-testid="stHeader"] {
 }
 #MainMenu, footer {
     visibility: hidden;
+}
+
+/* Bottom prompt bar - fixed at bottom */
+.bottom-prompt-wrap {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    background: linear-gradient(to top, rgba(255,255,255,0.98), rgba(255,255,255,0.75));
+    padding: 18px 0 24px 0;
+    border-top: 1px solid #e6e6e6;
+}
+
+.bottom-prompt-inner {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Text input styling */
+.prompt-input-wrapper {
+    position: relative;
+}
+
+.prompt-input-wrapper input {
+    width: 100%;
+    padding: 12px 50px 12px 16px;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    font-size: 14px;
+    background: #fbfbfb;
+}
+
+.prompt-input-wrapper input::placeholder {
+    color: #888;
+}
+
+/* Enter button - triangle shape */
+.enter-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 32px;
+    background: #000;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.enter-btn:hover {
+    background: #333;
+}
+
+.enter-btn::after {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 8px solid white;
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+    margin-left: 2px;
+}
+
+/* Mic button styling - minimalist circle */
+.mic-wrap {
+    position: relative;
+    width: 52px;
+    height: 52px;
+}
+
+.mic-wrap > div {
+    width: 52px !important;
+    height: 52px !important;
+}
+
+.mic-wrap button,
+.mic-wrap [role="button"] {
+    width: 52px !important;
+    height: 52px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+    background: radial-gradient(ellipse at 30% 30%, #ffffff 0%, #f7f7f7 60%, #efefef 100%) !important;
+    border: 1px solid #e0e0e0 !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+    font-size: 18px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.mic-wrap button:hover,
+.mic-wrap [role="button"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.15) !important;
+}
+
+/* Hide mic recorder labels and checkboxes */
+.mic-wrap input[type="checkbox"],
+.mic-wrap label {
+    display: none !important;
+}
+
+/* Override any text content in the button */
+.mic-wrap button > *:not(svg),
+.mic-wrap [role="button"] > *:not(svg) {
+    display: none;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -80,7 +196,7 @@ def load_and_generate_data():
         due = order['due_date']
         
         percentages = time_percentages.get(sku, time_percentages['VRAC_SHAMPOO_BASE'])
-        base_time = qty / 300.0  # stretched to see ~1 week
+        base_time = qty / 300.0
 
         operations = [
             ('MIX', percentages['MIX'], 1),
@@ -223,7 +339,6 @@ if st.session_state.filters_visible:
             st.session_state.schedule_df = base_schedule.copy()
             st.rerun()
         
-        # === Voice-only debug ===
         with st.expander("🎙 Voice Debug", expanded=False):
             if st.session_state.last_transcript:
                 st.caption("**Last transcript from Deepgram:**")
@@ -231,7 +346,6 @@ if st.session_state.filters_visible:
             else:
                 st.caption("No transcript yet.")
 
-        # === Command / OpenAI debug ===
         with st.expander("🤖 Command / OpenAI Debug", expanded=False):
             if st.session_state.cmd_log:
                 last = st.session_state.cmd_log[-1]
@@ -422,9 +536,6 @@ def _regex_fallback(user_text: str):
 
 
 def extract_intent(normalized_text: str) -> dict:
-    """
-    normalized_text is already passed through normalize_order_references.
-    """
     payload = _regex_fallback(normalized_text)
     if payload.get("intent") == "unknown":
         ai_payload = ai_extract_intent(normalized_text)
@@ -723,36 +834,38 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         st.error(f"⚠️ Error: {e}")
 
 
-# ============================ VOICE + TEXT PROMPT BAR =========================
+# ============================ BOTTOM PROMPT BAR (STYLED) =========================
 
-st.markdown("---")
-prompt_container = st.container()
+st.markdown('<div class="bottom-prompt-wrap"><div class="bottom-prompt-inner">', unsafe_allow_html=True)
 
-with prompt_container:
-    c1, c2 = st.columns([0.82, 0.18])
+# Text input with enter button
+col1, col2 = st.columns([0.88, 0.12])
 
-    with c1:
-        st.markdown("**🧠 Command**")
-        user_cmd = st.text_input(
-            "Type: delay / advance / swap orders…",
-            key="prompt_text",
-            label_visibility="collapsed",
-        )
+with col1:
+    st.markdown('<div class="prompt-input-wrapper">', unsafe_allow_html=True)
+    user_cmd = st.text_input(
+        "Command",
+        value=st.session_state.prompt_text,
+        placeholder="delay / advance / swap orders…",
+        key="prompt_input",
+        label_visibility="collapsed",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with c2:
-        st.markdown(
-            "<div style='text-align:right; font-size:0.8rem; "
-            "margin-bottom:0.25rem;'>🎤 Voice</div>",
-            unsafe_allow_html=True,
-        )
-        rec = mic_recorder(
-            start_prompt="●",
-            stop_prompt="■",
-            key="voice_mic",
-            just_once=False,
-            format="wav",
-            use_container_width=False,
-        )
+# Mic button
+with col2:
+    st.markdown('<div class="mic-wrap">', unsafe_allow_html=True)
+    rec = mic_recorder(
+        start_prompt="●",
+        stop_prompt="■",
+        key="voice_mic",
+        just_once=False,
+        format="wav",
+        use_container_width=False
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('</div></div>', unsafe_allow_html=True)
 
 # Voice: one shot per unique audio fingerprint
 if rec and isinstance(rec, dict) and rec.get("bytes"):
@@ -766,7 +879,7 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
             st.session_state.last_transcript = transcript
             if transcript:
                 _process_and_apply(transcript, source_hint="voice/deepgram")
-                st.rerun()  # rerun AFTER applying voice command
+                st.rerun()
             else:
                 st.warning("No speech detected.")
         except Exception as e:
@@ -774,7 +887,7 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
 
 # Text: process once per new command string
 if user_cmd and user_cmd != st.session_state.last_processed_cmd:
-    st.session_state.last_processed_cmd = user_cmd   # mark as processed
+    st.session_state.last_processed_cmd = user_cmd
     _process_and_apply(user_cmd, source_hint="text")
-    st.session_state.prompt_text = ""                # clear input box
-    st.rerun()                                       # rerun AFTER applying text command
+    st.session_state.prompt_text = ""
+    st.rerun()
