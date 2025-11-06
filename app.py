@@ -9,6 +9,8 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from streamlit_mic_recorder import mic_recorder
+from nlp_extractor import ai_extract_intent
+
 
 
 # ============================ PAGE & SECRETS ============================
@@ -445,14 +447,23 @@ def _regex_fallback(user_text: str):
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
 
+# def extract_intent(user_text: str) -> dict:
+#    """
+#    Entry point for NLU:
+#      1) Normalize order references (Order 1 → ORD-001)
+#      2) Apply regex extractor
+#      3) (Future) could plug an LLM-based extractor if needed
+#    """
+#    return _regex_fallback(user_text)
+
 def extract_intent(user_text: str) -> dict:
-    """
-    Entry point for NLU:
-      1) Normalize order references (Order 1 → ORD-001)
-      2) Apply regex extractor
-      3) (Future) could plug an LLM-based extractor if needed
-    """
-    return _regex_fallback(user_text)
+    user_text = normalize_order_references(user_text)
+    payload = _regex_fallback(user_text)
+    if payload.get("intent") == "unknown":
+        ai_payload = ai_extract_intent(user_text)
+        ai_payload["_source"] = "openai"
+        return ai_payload
+    return payload
 
 
 def validate_intent(payload: dict, orders_df, sched_df):
