@@ -13,8 +13,6 @@ from streamlit_mic_recorder import mic_recorder
 
 # ============================ PAGE & SECRETS ============================
 
-
-
 st.set_page_config(page_title="Bulk Production Scheduler", layout="wide")
 
 st.markdown("""
@@ -48,8 +46,6 @@ except Exception:
 
 # ============================ DATA LOADING ============================
 
-
-
 @st.cache_data
 def load_and_generate_data():
     orders_df = pd.read_csv("data/orders.csv", parse_dates=["due_date"])
@@ -61,18 +57,25 @@ def load_and_generate_data():
         'VRAC_HAIR_MASK': {'MIX': 0.130, 'TRF': 0.110, 'FILL': 0.100, 'FIN': 0.070}
     }
     
+    # Map line_id -> nice name (Mixing/Processing, Transfer/Holding, etc.)
     machine_names = {row['line_id']: row['name'] for _, row in lines_df.iterrows()}
     
+    # Logical operation -> physical line
+    # NOTE: align with data/lines.csv (TRANS_1 not TRF_1)
     line_map = {
         'MIX': 'MIX_1',
-        'TRF': 'TRANS_1', 
+        'TRF': 'TRANS_1',
         'FILL': 'FILL_1',
         'FIN': 'FIN_1'
     }
     
     schedule_rows = []
+
+    # Start horizon
     base_start = datetime(2025, 11, 3, 6, 0)
     machine_timeline = {v: base_start for v in line_map.values()}
+
+    # Sort orders by due date then ID
     orders_sorted = orders_df.sort_values(['due_date', 'order_id']).reset_index(drop=True)
     
     for idx, order in orders_sorted.iterrows():
@@ -81,9 +84,13 @@ def load_and_generate_data():
         qty = order['qty_kg']
         due = order['due_date']
         
+        # If unknown sku, fall back to shampoo profile
         percentages = time_percentages.get(sku, time_percentages['VRAC_SHAMPOO_BASE'])
-        base_time = qty / 1000
-        
+
+        # Stretch factor so that 12 orders spread over several days
+        # (qty / 300 instead of qty / 1000)
+        base_time = qty / 300.0  # "pseudo-hours" per order
+
         operations = [
             ('MIX', percentages['MIX'], 1),
             ('TRF', percentages['TRF'], 2),
@@ -92,6 +99,7 @@ def load_and_generate_data():
         ]
         
         order_start_time = None
+        prev_end = None
         
         for op_type, time_pct, seq in operations:
             machine = line_map[op_type]
@@ -111,7 +119,7 @@ def load_and_generate_data():
                 'operation': op_type,
                 'sequence': seq,
                 'machine': machine,
-                'machine_name': machine_names[machine],
+                'machine_name': machine_names.get(machine, machine),
                 'start': op_start,
                 'end': op_end,
                 'due_date': due,
@@ -126,6 +134,8 @@ def load_and_generate_data():
 
 
 orders, base_schedule = load_and_generate_data()
+
+# ============================ SESSION STATE ============================
 
 if "schedule_df" not in st.session_state:
     st.session_state.schedule_df = base_schedule.copy()
@@ -146,9 +156,12 @@ if "last_audio_fp" not in st.session_state:
     st.session_state.last_audio_fp = None
 if "last_transcript" not in st.session_state:
     st.session_state.last_transcript = None
+if "prompt_text" not in st.session_state:
+    st.session_state.prompt_text = ""
 
 
-# ============================ SIDEBAR ============================
+# ============================ SIDEBAR / HEADER ============================
+
 sidebar_display = "block" if st.session_state.filters_visible else "none"
 sidebar_css = f"""
 <style>
@@ -184,7 +197,8 @@ if st.session_state.filters_visible:
         st.session_state.filt_products = st.multiselect(
             "Products",
             products_all,
-            default=st.session_state.filt_products or products_all,
+            # default: no pre-selection; logic below will still treat "none" as "all"
+            default=st.session_state.filt_products,
             key="product_ms",
         )
         
@@ -192,7 +206,7 @@ if st.session_state.filters_visible:
         st.session_state.filt_machines = st.multiselect(
             "Machines",
             machines_all,
-            default=st.session_state.filt_machines or machines_all,
+            default=st.session_state.filt_machines,
             key="machine_ms",
         )
 
@@ -202,35 +216,82 @@ if st.session_state.filters_visible:
             color_options,
             index=color_options.index(st.session_state.color_mode)
             if st.session_state.color_mode in color_options
-            else 0,
+            else 1,  # default: Product
             key="color_mode_sb",
         )
         
         if st.button("Reset", key="reset_filters"):
             st.session_state.filt_max_orders = 20
-            st.session_state.filt_products = products_all
-            st.session_state.filt_machines = machines_all
-            st.session_state.color_mode = "Order"
+            st.session_state.filt_products = []
+            st.session_state.filt_machines = []
+            st.session_state.color_mode = "Product"
+            st.session_state.cmd_log = []
+            st.session_state.last_transcript = None
+            st.session_state.last_audio_fp = None
+            st.session_state.schedule_df = base_schedule.copy()
             st.rerun()
         
-        with st.expander("🐛 Debug"):
+        # === Rich Debug (inspired by UC2-V03 style) ===
+        with st.expander("🐛 Debug / Trace", expanded=False):
             if st.session_state.last_transcript:
-                st.caption("**Last transcript:**")
+                st.caption("**Last transcript (voice):**")
                 st.code(st.session_state.last_transcript)
+            else:
+                st.caption("No transcript yet.")
+            
             if st.session_state.cmd_log:
                 last = st.session_state.cmd_log[-1]
-                st.caption(f"**Last:** {last['raw']}")
-                st.caption(f"✓ {last['msg']}" if last['ok'] else f"✗ {last['msg']}")
+                st.markdown("**Last command:**")
+                st.markdown(
+                    f"- ⏱️ `{last.get('ts', '-')}` "
+                    f"from **{last.get('source', '?')}**"
+                )
+                st.markdown(f"- Raw: `{last.get('raw', '')}`")
+                if last.get("normalized") and last["normalized"] != last.get("raw", ""):
+                    st.markdown(f"- Normalized: `{last['normalized']}`")
+                st.markdown(
+                    f"- Status: {'✅ OK' if last.get('ok') else '❌ Error'} — {last.get('msg','')}"
+                )
+                st.caption("Payload:")
+                st.json(last.get("payload", {}))
+
+                # History table (last ~10 commands)
+                hist = st.session_state.cmd_log[-10:]
+                hist_rows = []
+                for h in hist:
+                    payload = h.get("payload", {}) or {}
+                    hist_rows.append({
+                        "time": h.get("ts", ""),
+                        "source": h.get("source", ""),
+                        "ok": "✅" if h.get("ok") else "❌",
+                        "intent": payload.get("intent", ""),
+                        "order_1": payload.get("order_id", ""),
+                        "order_2": payload.get("order_id_2", ""),
+                        "days": payload.get("days", ""),
+                        "hours": payload.get("hours", ""),
+                        "mins": payload.get("minutes", ""),
+                        "msg": h.get("msg", ""),
+                    })
+                hist_df = pd.DataFrame(hist_rows)
+                st.dataframe(hist_df, use_container_width=True, hide_index=True)
             else:
-                st.caption("No commands yet")
+                st.caption("No commands applied yet.")
+
 
 max_orders = int(st.session_state.filt_max_orders)
-product_choice = st.session_state.filt_products or sorted(base_schedule["wheel_type"].unique().tolist())
-machine_choice = st.session_state.filt_machines or sorted(base_schedule["machine_name"].unique().tolist())
+product_choice = (
+    st.session_state.filt_products
+    or sorted(base_schedule["wheel_type"].unique().tolist())
+)
+machine_choice = (
+    st.session_state.filt_machines
+    or sorted(base_schedule["machine_name"].unique().tolist())
+)
 color_mode = st.session_state.color_mode
 
 
 # ============================ NLP / INTELLIGENCE =========================
+
 DEFAULT_TZ = "Africa/Casablanca"
 TZ = pytz.timezone(DEFAULT_TZ)
 
@@ -240,6 +301,12 @@ NUM_WORDS = {
     "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
     "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
 }
+
+# Pattern to normalize order references "order 1", "Order one", "ord-3", etc.
+ORDER_REF_RE = re.compile(
+    r"\b(ord(?:er)?)\s*(?:number\s*)?(?P<num>\d{{1,3}}|\w+)\b",
+    flags=re.I,
+)
 
 def _num_token_to_float(tok: str):
     t = tok.strip().lower().replace("-", " ").replace(",", ".")
@@ -253,6 +320,43 @@ def _num_token_to_float(tok: str):
     if len(parts) == 2 and parts[0] in NUM_WORDS and parts[1] in NUM_WORDS:
         return float(NUM_WORDS[parts[0]] + NUM_WORDS[parts[1]])
     return None
+
+
+def normalize_order_references(text: str) -> str:
+    """
+    Convert variations like:
+    - 'order 1', 'order one', 'ord 7', 'order number 15'
+    into canonical IDs: 'ORD-001' .. 'ORD-100'
+    """
+    def repl(m: re.Match) -> str:
+        raw = m.group("num")
+        n = None
+        if raw.isdigit():
+            n = int(raw)
+        else:
+            key = raw.lower()
+            if key in NUM_WORDS:
+                n = NUM_WORDS[key]
+        if not n or n < 1 or n > 100:
+            return m.group(0)
+        return f"ORD-{n:03d}"
+
+    # main pattern: "order X"
+    new_text = ORDER_REF_RE.sub(repl, text)
+
+    # Optionally, support bare '#1' → ORD-001 when it's clearly an order ref
+    def repl_hash(m: re.Match) -> str:
+        num = m.group(1)
+        if not num.isdigit():
+            return m.group(0)
+        n = int(num)
+        if n < 1 or n > 100:
+            return m.group(0)
+        return f"ORD-{n:03d}"
+
+    new_text = re.sub(r"\border\s*#(\d{1,3})\b", repl_hash, new_text, flags=re.I)
+    return new_text
+
 
 def _parse_duration_chunks(text: str):
     d = {"days": 0.0, "hours": 0.0, "minutes": 0.0}
@@ -273,10 +377,18 @@ def _parse_duration_chunks(text: str):
             d["minutes"] += n
     return d
 
+
 def _regex_fallback(user_text: str):
+    """
+    Lightweight rule-based extractor for:
+      - swap ORD-001 with ORD-005
+      - delay ORD-003 by 2 days / 5 hours
+    Works on already-normalized order IDs (ORD-001 etc.).
+    """
     t = user_text.strip()
     low = t.lower()
     
+    # swap ORD-001 with ORD-005
     m = re.search(
         r"(?:^|\b)(swap|switch)\s+(ord-\d{3})\s*(?:with|and|&)?\s*(ord-\d{3})\b",
         low,
@@ -289,6 +401,7 @@ def _regex_fallback(user_text: str):
             "_source": "regex",
         }
     
+    # delay / advance (advance = negative delay)
     delay_sign = +1
     if re.search(r"\b(advance|bring\s+forward|pull\s+in)\b", low):
         delay_sign = -1
@@ -311,6 +424,7 @@ def _regex_fallback(user_text: str):
                 "_source": "regex",
             }
     
+    # fallback if we just see "delay ORD-001 2 days"
     m = re.search(
         r"(delay|push|postpone)\s+(ord-\d{3}).*?(days?|d|hours?|h|minutes?|mins?|m)\b",
         low_norm,
@@ -330,8 +444,16 @@ def _regex_fallback(user_text: str):
     
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
+
 def extract_intent(user_text: str) -> dict:
+    """
+    Entry point for NLU:
+      1) Normalize order references (Order 1 → ORD-001)
+      2) Apply regex extractor
+      3) (Future) could plug an LLM-based extractor if needed
+    """
     return _regex_fallback(user_text)
+
 
 def validate_intent(payload: dict, orders_df, sched_df):
     intent = payload.get("intent")
@@ -370,6 +492,7 @@ def validate_intent(payload: dict, orders_df, sched_df):
 
 
 # ============================ APPLY FUNCTIONS =========================
+
 def _repack_touched_machines(s: pd.DataFrame, touched_orders):
     machines = s.loc[s["order_id"].isin(touched_orders), "machine"].unique().tolist()
     for m in machines:
@@ -383,6 +506,7 @@ def _repack_touched_machines(s: pd.DataFrame, touched_orders):
                 s.at[idx, "end"] = last_end + dur
             last_end = s.at[idx, "end"]
     return s
+
 
 def apply_delay(schedule_df: pd.DataFrame, order_id: str, days=0, hours=0, minutes=0):
     s = schedule_df.copy()
@@ -400,6 +524,7 @@ def apply_delay(schedule_df: pd.DataFrame, order_id: str, days=0, hours=0, minut
         s.at[idx, "end"] = s.at[idx, "start"] + dur
     
     return _repack_touched_machines(s, [order_id])
+
 
 def apply_swap(schedule_df: pd.DataFrame, a: str, b: str):
     s = schedule_df.copy()
@@ -423,6 +548,7 @@ def apply_swap(schedule_df: pd.DataFrame, a: str, b: str):
 
 
 # ============================ GANTT =========================
+
 sched = st.session_state.schedule_df.copy()
 sched = sched[sched["wheel_type"].isin(product_choice)]
 sched = sched[sched["machine_name"].isin(machine_choice)]
@@ -498,8 +624,12 @@ else:
     ]
     
     base_enc = {
-        "y": alt.Y("machine_name:N", sort=machine_order, title=None, 
-                  axis=alt.Axis(labelLimit=200)),
+        "y": alt.Y(
+            "machine_name:N",
+            sort=machine_order,
+            title=None,
+            axis=alt.Axis(labelLimit=200)
+        ),
         "x": alt.X("start:T", title=None, axis=alt.Axis(format="%b %d %H:%M")),
         "x2": "end:T",
     }
@@ -538,7 +668,7 @@ else:
         alt.layer(bars, labels, data=sched)
         .encode(**base_enc)
         .add_params(select_order)
-        .properties(width="container", height=380)
+        .properties(width="container", height=350)
         .configure_view(stroke=None)
     )
     
@@ -546,6 +676,7 @@ else:
 
 
 # ============================ DEEPGRAM TRANSCRIPTION =========================
+
 def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") -> str:
     key = os.getenv("DEEPGRAM_API_KEY")
     if not key:
@@ -566,20 +697,28 @@ def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") ->
 
 
 # ============================ PROCESS COMMAND =========================
+
 def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     from copy import deepcopy
     try:
-        payload = extract_intent(cmd_text)
+        # 1) Normalize order references for both text & voice
+        normalized = normalize_order_references(cmd_text)
 
+        # 2) Extract intent on normalized text
+        payload = extract_intent(normalized)
+
+        # 3) Validate vs current data
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
         
         log_payload = deepcopy(payload)
         st.session_state.cmd_log.append({
             "raw": cmd_text,
+            "normalized": normalized,
             "payload": log_payload,
             "ok": bool(ok),
             "msg": msg,
             "source": source_hint or payload.get("_source", "?"),
+            "ts": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
         })
         st.session_state.cmd_log = st.session_state.cmd_log[-50:]
         
@@ -596,7 +735,8 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 minutes=payload.get("minutes", 0),
             )
             direction = "Advanced" if (payload.get("days", 0) < 0 or 
-                       payload.get("hours", 0) < 0) else "Delayed"
+                       payload.get("hours", 0) < 0 or 
+                       payload.get("minutes", 0) < 0) else "Delayed"
             st.success(f"✅ {direction} {payload['order_id']}")
         elif payload["intent"] == "swap_orders":
             st.session_state.schedule_df = apply_swap(
@@ -610,27 +750,34 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         st.error(f"⚠️ Error: {e}")
 
 
-# ============================ VOICE INPUT =========================
+# ============================ VOICE + TEXT PROMPT BAR =========================
+
 st.markdown("---")
-col1, col2 = st.columns([1, 4])
+prompt_container = st.container()
 
-with col1:
-    st.markdown("**🎤 Voice Command:**")
-    rec = mic_recorder(
-        start_prompt="🎙️ Record",
-        stop_prompt="⏹️ Stop",
-        key="voice_mic",
-        just_once=False,
-        format="wav",
-        use_container_width=True
-    )
+with prompt_container:
+    c1, c2 = st.columns([0.18, 0.82])  # mic + prompt bar in one row
 
-with col2:
-    if st.session_state.last_transcript:
-        st.info(f"**Transcript:** {st.session_state.last_transcript}")
-    else:
-        st.caption("Press the mic button to record your voice command")
+    with c1:
+        st.markdown("**🎤 Voice**")
+        rec = mic_recorder(
+            start_prompt="🎙️",
+            stop_prompt="⏹️",
+            key="voice_mic",
+            just_once=False,
+            format="wav",
+            use_container_width=True
+        )
 
+    with c2:
+        st.markdown("**🧠 Command**")
+        user_cmd = st.text_input(
+            "Type: delay / advance / swap orders…",
+            key="prompt_text",
+            label_visibility="collapsed",
+        )
+
+# Handle voice
 if rec and isinstance(rec, dict) and rec.get("bytes"):
     wav_bytes = rec["bytes"]
     fp = (len(wav_bytes), hash(wav_bytes[:1024]))
@@ -647,9 +794,8 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
         except Exception as e:
             st.error(f"Transcription failed: {e}")
 
-
-# ============================ TEXT INPUT =========================
-user_cmd = st.chat_input("Or type: delay / advance / swap orders…", key="cmd_input")
-
+# Handle typed text
 if user_cmd:
     _process_and_apply(user_cmd, source_hint="text")
+    # Clear the box on next run
+    st.session_state.prompt_text = ""
