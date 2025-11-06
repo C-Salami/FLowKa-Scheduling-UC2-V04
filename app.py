@@ -151,8 +151,6 @@ if "prompt_text" not in st.session_state:
     st.session_state.prompt_text = ""
 if "last_processed_cmd" not in st.session_state:
     st.session_state.last_processed_cmd = None
-if "active_order" not in st.session_state:
-    st.session_state.active_order = None
 
 
 # ============================ SIDEBAR / HEADER ============================
@@ -243,8 +241,6 @@ if st.session_state.filters_visible:
                     f"from **{last.get('source', '?')}**"
                 )
                 st.markdown(f"- Raw: `{last.get('raw', '')}`")
-                if last.get("enriched") and last["enriched"] != last.get("raw", ""):
-                    st.markdown(f"- Enriched: `{last['enriched']}`")
                 if last.get("normalized") and last["normalized"] != last.get("raw", ""):
                     st.markdown(f"- Normalized: `{last['normalized']}`")
                 st.markdown(
@@ -425,31 +421,6 @@ def _regex_fallback(user_text: str):
     return {"intent": "unknown", "raw": user_text, "_source": "regex"}
 
 
-def inject_active_order_reference(text: str, active_order: str = None) -> str:
-    """
-    Replace 'this / this order / this one' with the currently active order,
-    but only if there is no explicit ORD-xxx already in the text.
-    """
-    if not active_order:
-        return text
-
-    low = text.lower()
-    if "ord-" in low:
-        return text
-
-    patterns = [
-        r"\bthis order\b",
-        r"\bthis one\b",
-        r"\bthis\b",
-    ]
-
-    new_text = text
-    for pat in patterns:
-        new_text = re.sub(pat, active_order, new_text, flags=re.I)
-
-    return new_text
-
-
 def extract_intent(normalized_text: str) -> dict:
     """
     normalized_text is already passed through normalize_order_references.
@@ -568,33 +539,9 @@ order_priority = (
 keep_ids = order_priority["order_id"].head(max_orders).tolist()
 sched = sched[sched["order_id"].isin(keep_ids)].copy()
 
-visible_orders = sorted(sched["order_id"].unique()) if not sched.empty else []
-
-# keep active_order consistent with visible orders
-if visible_orders:
-    if st.session_state.active_order not in visible_orders:
-        st.session_state.active_order = visible_orders[0]
-else:
-    st.session_state.active_order = None
-
 if sched.empty:
     st.info("No operations match filters")
 else:
-    # Active order selector
-    if visible_orders:
-        st.markdown("**🎯 Active order for 'this' commands**")
-        st.session_state.active_order = st.selectbox(
-            "Active order",
-            visible_orders,
-            index=visible_orders.index(st.session_state.active_order)
-            if st.session_state.active_order in visible_orders else 0,
-            key="active_order_sb",
-            label_visibility="collapsed",
-        )
-        st.caption(
-            f"Commands like *'delay this by 4 hours'* will use **{st.session_state.active_order}**."
-        )
-
     unique_orders = sorted(sched["order_id"].unique())
     color_palette = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -732,14 +679,7 @@ def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") ->
 def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     from copy import deepcopy
     try:
-        # 1) Inject active order when user says "this / this order / this one"
-        active_order = st.session_state.get("active_order")
-        enriched = inject_active_order_reference(cmd_text, active_order)
-
-        # 2) Normalize order references (Order 1 → ORD-001, etc.)
-        normalized = normalize_order_references(enriched)
-
-        # 3) Extract intent (regex + OpenAI)
+        normalized = normalize_order_references(cmd_text)
         payload = extract_intent(normalized)
 
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
@@ -747,7 +687,6 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         log_payload = deepcopy(payload)
         st.session_state.cmd_log.append({
             "raw": cmd_text,
-            "enriched": enriched,
             "normalized": normalized,
             "payload": log_payload,
             "ok": bool(ok),
@@ -790,10 +729,10 @@ st.markdown("---")
 prompt_container = st.container()
 
 with prompt_container:
-    # text input + send button + mic all in one row
-    c1, c2, c3 = st.columns([0.72, 0.08, 0.20])
+    c1, c2 = st.columns([0.82, 0.18])
 
     with c1:
+        st.markdown("**🧠 Command**")
         user_cmd = st.text_input(
             "Type: delay / advance / swap orders…",
             key="prompt_text",
@@ -801,9 +740,6 @@ with prompt_container:
         )
 
     with c2:
-        send_clicked = st.button("➤", key="send_cmd")
-
-    with c3:
         st.markdown(
             "<div style='text-align:right; font-size:0.8rem; "
             "margin-bottom:0.25rem;'>🎤 Voice</div>",
@@ -836,10 +772,9 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
         except Exception as e:
             st.error(f"Transcription failed: {e}")
 
-# Text: process only when send button is clicked
-if send_clicked and user_cmd:
-    if user_cmd != st.session_state.last_processed_cmd:
-        st.session_state.last_processed_cmd = user_cmd   # mark as processed
-        _process_and_apply(user_cmd, source_hint="text")
-        st.session_state.prompt_text = ""                # clear input box
-        st.rerun()                                       # rerun AFTER applying text command
+# Text: process once per new command string
+if user_cmd and user_cmd != st.session_state.last_processed_cmd:
+    st.session_state.last_processed_cmd = user_cmd   # mark as processed
+    _process_and_apply(user_cmd, source_hint="text")
+    st.session_state.prompt_text = ""                # clear input box
+    st.rerun()                                       # rerun AFTER applying text command
