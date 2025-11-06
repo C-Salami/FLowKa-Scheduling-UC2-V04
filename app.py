@@ -719,6 +719,10 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 payload["order_id_2"],
             )
             st.success(f"✅ Swapped {payload['order_id']} ↔ {payload['order_id_2']}")
+
+        # IMPORTANT: after a successful command, rerun once
+        st.rerun()
+
     except Exception as e:
         st.error(f"⚠️ Error: {e}")
 
@@ -775,3 +779,19 @@ if rec and isinstance(rec, dict) and rec.get("bytes"):
 if user_cmd and user_cmd != st.session_state.last_processed_cmd:
     _process_and_apply(user_cmd, source_hint="text")
     st.session_state.last_processed_cmd = user_cmd
+
+
+# Voice: one shot per unique audio fingerprint
+if rec and isinstance(rec, dict) and rec.get("bytes"):
+    wav_bytes = rec["bytes"]
+    fp = (len(wav_bytes), hash(wav_bytes[:1024]))
+    if fp != st.session_state.last_audio_fp:
+        st.session_state.last_audio_fp = fp
+        ...
+        _process_and_apply(transcript, source_hint="voice/deepgram")
+
+# Text: process once per new command string
+if user_cmd and user_cmd != st.session_state.last_processed_cmd:
+    _process_and_apply(user_cmd, source_hint="text")
+    st.session_state.last_processed_cmd = user_cmd
+
