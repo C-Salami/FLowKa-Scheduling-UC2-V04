@@ -39,4 +39,5 @@ def ai_extract_intent(text: str) -> dict:
         json_str = raw[start:end]
         return json.loads(json_str)
     except Exception as e:
-        return {"intent": "unknown", "_error": str(e), "_raw": str(response)}
+        # don't reference 'response' here, it might not exist
+        return {"intent": "unknown", "_error": str(e)}
