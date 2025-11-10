@@ -708,6 +708,18 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         normalized = normalize_order_references(cmd_text)
         payload = extract_intent(normalized)
 
+        # If user didn't specify an order but clicked one on the chart,
+        # implicitly apply the delay to the selected order.
+    if (
+        payload.get("intent") == "delay_order"
+        and not payload.get("order_id")
+        and st.session_state.get("selected_order_id")
+    ):
+        payload["order_id"] = st.session_state.selected_order_id
+        payload["_selected_from"] = "chart"
+
+        
+        
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
         
         log_payload = deepcopy(payload)
