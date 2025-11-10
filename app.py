@@ -810,6 +810,8 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
 
 # ============================ VOICE + TEXT PROMPT BAR =========================
 
+# ============================ VOICE + TEXT PROMPT BAR =========================
+
 st.markdown("---")
 prompt_container = st.container()
 
@@ -817,7 +819,8 @@ with prompt_container:
     c1, c2 = st.columns([0.82, 0.18])
 
     with c1:
-                st.markdown(
+        st.markdown("**🧠 Command**")
+        st.markdown(
             f"<span style='font-size:0.8rem; color:#555;'>"
             f"Contextual target (for “this / that”): "
             f"<code>{st.session_state.get('selected_order_id') or '-'}</code>"
