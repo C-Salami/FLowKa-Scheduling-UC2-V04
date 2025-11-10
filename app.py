@@ -682,38 +682,46 @@ else:
         )
     )
     
-    labels = (
+    # Create single combined chart instead of layer for selection support
+    bars_with_text = (
         alt.Chart(sched)
-        .mark_text(align="left", dx=4, baseline="middle", fontSize=9, color="white")
+        .mark_bar(cornerRadius=2)
         .encode(
-            text="order_id:N",
+            color=color_encoding,
             opacity=alt.condition(
-                select_order, alt.value(1.0), alt.value(0.7)
+                select_order, alt.value(1.0), alt.value(0.3)
             ),
+            tooltip=[
+                alt.Tooltip("order_id:N", title="Order"),
+                alt.Tooltip("operation:N", title="Op"),
+                alt.Tooltip("machine_name:N", title="Machine"),
+                alt.Tooltip("start:T", title="Start", format="%b %d %H:%M"),
+                alt.Tooltip("end:T", title="End", format="%b %d %H:%M"),
+                alt.Tooltip("due_date:T", title="Due", format="%b %d"),
+            ],
+            **base_enc
         )
-    )
-    
-    gantt = (
-        alt.layer(bars, labels, data=sched)
-        .encode(**base_enc)
         .add_params(select_order)
         .properties(width="container", height=350)
         .configure_view(stroke=None)
     )
     
-    # Capture selection from Altair chart
-    selected_data = st.altair_chart(gantt, use_container_width=True, on_select="rerun")
+    # Render with selection capture
+    event = st.altair_chart(bars_with_text, use_container_width=True, key="gantt_chart", on_select="rerun")
     
     # Update session state with selected order
-    if selected_data and "selection" in selected_data:
-        selection_points = selected_data["selection"].get("param_1", [])
-        if selection_points:
-            selected_order = selection_points[0].get("order_id")
-            if selected_order:
-                st.session_state.selected_order_id = selected_order
-        else:
-            # Clear selection on double-click
-            st.session_state.selected_order_id = None
+    if event:
+        if hasattr(event, 'selection') and event.selection:
+            sel_params = event.selection
+            # Extract order_id from selection
+            for param_name, param_value in sel_params.items():
+                if param_value and isinstance(param_value, list) and len(param_value) > 0:
+                    if 'order_id' in param_value[0]:
+                        st.session_state.selected_order_id = param_value[0]['order_id']
+                        break
+                elif not param_value or (isinstance(param_value, list) and len(param_value) == 0):
+                    # Empty selection = double-click clear
+                    st.session_state.selected_order_id = None
 
 
 # ============================ DEEPGRAM TRANSCRIPTION =========================
