@@ -153,12 +153,6 @@ if "last_processed_cmd" not in st.session_state:
     st.session_state.last_processed_cmd = None
 
 
-# NEW: active selection from chart / UI
-if "selected_order_id" not in st.session_state:
-    st.session_state.selected_order_id = None
-
-
-
 # ============================ SIDEBAR / HEADER ============================
 
 sidebar_display = "block" if st.session_state.filters_visible else "none"
@@ -549,57 +543,12 @@ if sched.empty:
     st.info("No operations match filters")
 else:
     unique_orders = sorted(sched["order_id"].unique())
-
-    # NEW: keep selected_order_id aligned with visible orders
-    if unique_orders:
-        if st.session_state.selected_order_id not in unique_orders:
-            st.session_state.selected_order_id = unique_orders[0]
-    else:
-        st.session_state.selected_order_id = None
-
-    # NEW: small selector for the active order used by "this / that"
-    col_sel, col_badge = st.columns([0.65, 0.35])
-    with col_sel:
-        if unique_orders:
-            active_order = st.selectbox(
-                "🎯 Active order for “this / that” commands",
-                unique_orders,
-                index=unique_orders.index(st.session_state.selected_order_id)
-                if st.session_state.selected_order_id in unique_orders
-                else 0,
-                key="active_order_selector",
-            )
-            st.session_state.selected_order_id = active_order
-        else:
-            st.write("No orders to select.")
-
-    with col_badge:
-        st.markdown(
-            f"""
-            <div style="text-align:right; font-size:0.85rem; margin-top:0.6rem;">
-                Currently bound to: 
-                <code>{st.session_state.selected_order_id or "-"}</code>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # existing color palette logic
     color_palette = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
         "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
         "#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5"
     ]
-    while len(color_palette) < len(unique_orders):
-        color_palette.extend(color_palette[:10])
-    
-    order_color_map = {
-        oid: color_palette[i % len(color_palette)]
-        for i, oid in enumerate(unique_orders)
-    }
-    sched["order_color"] = sched["order_id"].map(order_color_map)
-
     while len(color_palette) < len(unique_orders):
         color_palette.extend(color_palette[:10])
     
@@ -727,39 +676,14 @@ def _deepgram_transcribe_bytes(wav_bytes: bytes, mimetype: str = "audio/wav") ->
 
 # ============================ PROCESS COMMAND =========================
 
-
-
 def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     from copy import deepcopy
     try:
         normalized = normalize_order_references(cmd_text)
         payload = extract_intent(normalized)
 
-        # === Contextual "this / that / selected order" handling ===
-        low_norm = normalized.lower()
-        mentions_context_word = bool(
-            re.search(r"\b(this|that|selected order)\b", low_norm)
-        )
-
-        ctx_error = None
-        if payload.get("intent") in ("delay_order", "swap_orders") and not payload.get("order_id"):
-            if mentions_context_word:
-                selected = st.session_state.get("selected_order_id")
-                if selected:
-                    payload["order_id"] = selected
-                else:
-                    ctx_error = (
-                        "Please select an order on the chart first, "
-                        "then try again (e.g. “delay this by 2 hours”)."
-                    )
-
-        # Validation (either from context error or normal path)
-        if ctx_error:
-            ok, msg = False, ctx_error
-        else:
-            ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
-
-        # Log whatever we decided
+        ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
+        
         log_payload = deepcopy(payload)
         st.session_state.cmd_log.append({
             "raw": cmd_text,
@@ -771,12 +695,11 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
             "ts": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
         })
         st.session_state.cmd_log = st.session_state.cmd_log[-50:]
-
+        
         if not ok:
             st.error(f"❌ {msg}")
             return
-
-        # === Apply actions & refresh context ===
+        
         if payload["intent"] == "delay_order":
             st.session_state.schedule_df = apply_delay(
                 st.session_state.schedule_df,
@@ -785,15 +708,10 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 hours=payload.get("hours", 0),
                 minutes=payload.get("minutes", 0),
             )
-            direction = "Advanced" if (
-                payload.get("days", 0) < 0 or 
-                payload.get("hours", 0) < 0 or 
-                payload.get("minutes", 0) < 0
-            ) else "Delayed"
+            direction = "Advanced" if (payload.get("days", 0) < 0 or 
+                       payload.get("hours", 0) < 0 or 
+                       payload.get("minutes", 0) < 0) else "Delayed"
             st.success(f"✅ {direction} {payload['order_id']}")
-            # keep context on last touched order
-            st.session_state.selected_order_id = payload["order_id"]
-
         elif payload["intent"] == "swap_orders":
             st.session_state.schedule_df = apply_swap(
                 st.session_state.schedule_df,
@@ -801,14 +719,9 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 payload["order_id_2"],
             )
             st.success(f"✅ Swapped {payload['order_id']} ↔ {payload['order_id_2']}")
-            # context: keep first order as "current"
-            st.session_state.selected_order_id = payload["order_id"]
-
     except Exception as e:
         st.error(f"⚠️ Error: {e}")
 
-
-# ============================ VOICE + TEXT PROMPT BAR =========================
 
 # ============================ VOICE + TEXT PROMPT BAR =========================
 
@@ -820,14 +733,6 @@ with prompt_container:
 
     with c1:
         st.markdown("**🧠 Command**")
-        st.markdown(
-            f"<span style='font-size:0.8rem; color:#555;'>"
-            f"Contextual target (for “this / that”): "
-            f"<code>{st.session_state.get('selected_order_id') or '-'}</code>"
-            f"</span>",
-            unsafe_allow_html=True,
-        )
-
         user_cmd = st.text_input(
             "Type: delay / advance / swap orders…",
             key="prompt_text",
