@@ -560,9 +560,9 @@ else:
     }
     sched["order_color"] = sched["order_id"].map(order_color_map)
 
-        # --- selection + colors ---
+    # --- selection + colors ---
     select_order = alt.selection_point(
-        name="order_select",          # important: named for Streamlit
+        name="order_select",
         fields=["order_id"],
         on="click",
         clear="dblclick",
@@ -710,15 +710,13 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
 
         # If user didn't specify an order but clicked one on the chart,
         # implicitly apply the delay to the selected order.
-    if (
-        payload.get("intent") == "delay_order"
-        and not payload.get("order_id")
-        and st.session_state.get("selected_order_id")
-    ):
-        payload["order_id"] = st.session_state.selected_order_id
-        payload["_selected_from"] = "chart"
-
-        
+        if (
+            payload.get("intent") == "delay_order"
+            and not payload.get("order_id")
+            and st.session_state.get("selected_order_id")
+        ):
+            payload["order_id"] = st.session_state.selected_order_id
+            payload["_selected_from"] = "chart"
         
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
         
@@ -746,9 +744,11 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
                 hours=payload.get("hours", 0),
                 minutes=payload.get("minutes", 0),
             )
-            direction = "Advanced" if (payload.get("days", 0) < 0 or 
-                       payload.get("hours", 0) < 0 or 
-                       payload.get("minutes", 0) < 0) else "Delayed"
+            direction = "Advanced" if (
+                (payload.get("days", 0) or 0) < 0 or 
+                (payload.get("hours", 0) or 0) < 0 or 
+                (payload.get("minutes", 0) or 0) < 0
+            ) else "Delayed"
             st.success(f"✅ {direction} {payload['order_id']}")
         elif payload["intent"] == "swap_orders":
             st.session_state.schedule_df = apply_swap(
