@@ -560,7 +560,7 @@ else:
     }
     sched["order_color"] = sched["order_id"].map(order_color_map)
 
-    # --- selection + colors ---
+    # --- selection + colors (single-view chart only) ---
     select_order = alt.selection_point(
         name="order_select",
         fields=["order_id"],
@@ -587,6 +587,18 @@ else:
             ),
             alt.value("#e0e0e0"),
         )
+    elif color_mode == "Machine":
+        machine_domain = sorted(sched["machine_name"].unique().tolist())
+        machine_palette = ["#16a085", "#2980b9", "#8e44ad", "#c0392b"]
+        color_encoding = alt.condition(
+            select_order,
+            alt.Color(
+                "machine_name:N",
+                scale=alt.Scale(domain=machine_domain, range=machine_palette),
+                legend=None,
+            ),
+            alt.value("#e0e0e0"),
+        )
     else:
         field_map = {
             "Product": "wheel_type",
@@ -596,59 +608,39 @@ else:
         color_field = field_map.get(color_mode, "wheel_type")
         color_encoding = alt.Color(f"{color_field}:N", legend=None)
 
-    machine_order = [
-        "Mixing/Processing",
-        "Transfer/Holding",
-        "Filling/Capping",
-        "Finishing/QC",
-    ]
+    # You can adapt this to your actual machine_name values
+    machine_order = sorted(sched["machine_name"].unique().tolist())
 
-    base_enc = {
-        "y": alt.Y(
-            "machine_name:N",
-            sort=machine_order,
-            title=None,
-            axis=alt.Axis(labelLimit=200),
-        ),
-        "x": alt.X("start:T", title=None, axis=alt.Axis(format="%b %d %H:%M")),
-        "x2": "end:T",
-    }
-
-    bars = (
+    gantt = (
         alt.Chart(sched)
         .mark_bar(cornerRadius=2)
         .encode(
+            y=alt.Y(
+                "machine_name:N",
+                sort=machine_order,
+                title=None,
+                axis=alt.Axis(labelLimit=200),
+            ),
+            x=alt.X("start:T", title=None, axis=alt.Axis(format="%b %d %H:%M")),
+            x2="end:T",
             color=color_encoding,
             opacity=alt.condition(select_order, alt.value(1.0), alt.value(0.3)),
             tooltip=[
                 alt.Tooltip("order_id:N", title="Order"),
                 alt.Tooltip("operation:N", title="Op"),
                 alt.Tooltip("machine_name:N", title="Machine"),
+                alt.Tooltip("wheel_type:N", title="Product"),
                 alt.Tooltip("start:T", title="Start", format="%b %d %H:%M"),
                 alt.Tooltip("end:T", title="End", format="%b %d %H:%M"),
                 alt.Tooltip("due_date:T", title="Due", format="%b %d"),
             ],
         )
-    )
-
-    labels = (
-        alt.Chart(sched)
-        .mark_text(align="left", dx=4, baseline="middle", fontSize=9, color="white")
-        .encode(
-            text="order_id:N",
-            opacity=alt.condition(select_order, alt.value(1.0), alt.value(0.7)),
-        )
-    )
-
-    gantt = (
-        alt.layer(bars, labels, data=sched)
-        .encode(**base_enc)
         .add_params(select_order)
         .properties(width="container", height=350)
         .configure_view(stroke=None)
     )
 
-    # 🔴 NEW: capture click event and store selected order
+    # Capture click event and store selected order
     event = st.altair_chart(
         gantt,
         use_container_width=True,
@@ -673,10 +665,8 @@ else:
         if selected_id:
             st.session_state.selected_order_id = selected_id
 
-    # (optional: small text for debugging – remove if you don’t want it)
     if st.session_state.selected_order_id:
         st.caption(f"Selected order on chart: **{st.session_state.selected_order_id}**")
-
 
 
 # ============================ DEEPGRAM TRANSCRIPTION =========================
