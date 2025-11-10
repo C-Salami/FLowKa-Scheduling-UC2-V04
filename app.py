@@ -151,6 +151,8 @@ if "prompt_text" not in st.session_state:
     st.session_state.prompt_text = ""
 if "last_processed_cmd" not in st.session_state:
     st.session_state.last_processed_cmd = None
+if "selected_order_id" not in st.session_state:
+    st.session_state.selected_order_id = None
 
 
 # ============================ SIDEBAR / HEADER ============================
@@ -221,7 +223,12 @@ if st.session_state.filters_visible:
             st.session_state.last_transcript = None
             st.session_state.last_audio_fp = None
             st.session_state.schedule_df = base_schedule.copy()
+            st.session_state.selected_order_id = None
             st.rerun()
+        
+        # === Show selected order ===
+        if st.session_state.selected_order_id:
+            st.info(f"📍 Selected: **{st.session_state.selected_order_id}**")
         
         # === Voice-only debug ===
         with st.expander("🎙 Voice Debug", expanded=False):
@@ -300,6 +307,16 @@ ORDER_REF_RE = re.compile(
     flags=re.I,
 )
 
+# Contextual reference patterns
+CONTEXTUAL_PATTERNS = [
+    r"\bthis\s+one\b",
+    r"\bthis\b",
+    r"\bthat\b",
+    r"\bselected\s+order\b",
+    r"\bhere\b",
+    r"\bit\b",
+]
+
 def _num_token_to_float(tok: str):
     t = tok.strip().lower().replace("-", " ").replace(",", ".")
     try:
@@ -341,6 +358,15 @@ def normalize_order_references(text: str) -> str:
 
     new_text = re.sub(r"\border\s*#(\d{1,3})\b", repl_hash, new_text, flags=re.I)
     return new_text
+
+
+def has_contextual_reference(text: str) -> bool:
+    """Check if text contains contextual references like 'this', 'that', etc."""
+    text_lower = text.lower()
+    for pattern in CONTEXTUAL_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
 
 
 def _parse_duration_chunks(text: str):
@@ -431,6 +457,31 @@ def extract_intent(normalized_text: str) -> dict:
         ai_payload["_source"] = ai_payload.get("_source", "openai")
         return ai_payload
     return payload
+
+
+def apply_contextual_selection(payload: dict, cmd_text: str) -> tuple:
+    """
+    Apply contextual selection if command contains 'this', 'that', etc.
+    Returns: (updated_payload, needs_selection_flag)
+    """
+    # Check if command has contextual reference
+    if not has_contextual_reference(cmd_text):
+        return payload, False
+    
+    # Check if payload already has an explicit order_id
+    if payload.get("order_id") and payload["order_id"].startswith("ORD-"):
+        return payload, False
+    
+    # Check if we have a selected order
+    selected = st.session_state.selected_order_id
+    if not selected:
+        return payload, True  # Needs selection
+    
+    # Apply contextual selection
+    payload["order_id"] = selected
+    payload["_contextual"] = True
+    
+    return payload, False
 
 
 def validate_intent(payload: dict, orders_df, sched_df):
@@ -650,7 +701,19 @@ else:
         .configure_view(stroke=None)
     )
     
-    st.altair_chart(gantt, use_container_width=True)
+    # Capture selection from Altair chart
+    selected_data = st.altair_chart(gantt, use_container_width=True, on_select="rerun")
+    
+    # Update session state with selected order
+    if selected_data and "selection" in selected_data:
+        selection_points = selected_data["selection"].get("param_1", [])
+        if selection_points:
+            selected_order = selection_points[0].get("order_id")
+            if selected_order:
+                st.session_state.selected_order_id = selected_order
+        else:
+            # Clear selection on double-click
+            st.session_state.selected_order_id = None
 
 
 # ============================ DEEPGRAM TRANSCRIPTION =========================
@@ -681,6 +744,22 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
     try:
         normalized = normalize_order_references(cmd_text)
         payload = extract_intent(normalized)
+        
+        # Apply contextual selection if needed
+        payload, needs_selection = apply_contextual_selection(payload, cmd_text)
+        
+        if needs_selection:
+            st.warning("⚠️ Please select an order on the chart first.")
+            st.session_state.cmd_log.append({
+                "raw": cmd_text,
+                "normalized": normalized,
+                "payload": deepcopy(payload),
+                "ok": False,
+                "msg": "No order selected for contextual reference",
+                "source": source_hint or payload.get("_source", "?"),
+                "ts": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            return
 
         ok, msg = validate_intent(payload, orders, st.session_state.schedule_df)
         
@@ -711,70 +790,15 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
             direction = "Advanced" if (payload.get("days", 0) < 0 or 
                        payload.get("hours", 0) < 0 or 
                        payload.get("minutes", 0) < 0) else "Delayed"
-            st.success(f"✅ {direction} {payload['order_id']}")
+            contextual_note = " (selected)" if payload.get("_contextual") else ""
+            st.success(f"✅ {direction} {payload['order_id']}{contextual_note}")
         elif payload["intent"] == "swap_orders":
             st.session_state.schedule_df = apply_swap(
                 st.session_state.schedule_df,
                 payload["order_id"],
                 payload["order_id_2"],
             )
-            st.success(f"✅ Swapped {payload['order_id']} ↔ {payload['order_id_2']}")
+            contextual_note = " (selected)" if payload.get("_contextual") else ""
+            st.success(f"✅ Swapped {payload['order_id']}{contextual_note} ↔ {payload['order_id_2']}")
     except Exception as e:
         st.error(f"⚠️ Error: {e}")
-
-
-# ============================ VOICE + TEXT PROMPT BAR =========================
-
-st.markdown("---")
-prompt_container = st.container()
-
-with prompt_container:
-    c1, c2 = st.columns([0.82, 0.18])
-
-    with c1:
-        st.markdown("**🧠 Command**")
-        user_cmd = st.text_input(
-            "Type: delay / advance / swap orders…",
-            key="prompt_text",
-            label_visibility="collapsed",
-        )
-
-    with c2:
-        st.markdown(
-            "<div style='text-align:right; font-size:0.8rem; "
-            "margin-bottom:0.25rem;'>🎤 Voice</div>",
-            unsafe_allow_html=True,
-        )
-        rec = mic_recorder(
-            start_prompt="●",
-            stop_prompt="■",
-            key="voice_mic",
-            just_once=False,
-            format="wav",
-            use_container_width=False,
-        )
-
-# Voice: one shot per unique audio fingerprint
-if rec and isinstance(rec, dict) and rec.get("bytes"):
-    wav_bytes = rec["bytes"]
-    fp = (len(wav_bytes), hash(wav_bytes[:1024]))
-    if fp != st.session_state.last_audio_fp:
-        st.session_state.last_audio_fp = fp
-        try:
-            with st.spinner("Transcribing…"):
-                transcript = _deepgram_transcribe_bytes(wav_bytes, mimetype="audio/wav")
-            st.session_state.last_transcript = transcript
-            if transcript:
-                _process_and_apply(transcript, source_hint="voice/deepgram")
-                st.rerun()  # rerun AFTER applying voice command
-            else:
-                st.warning("No speech detected.")
-        except Exception as e:
-            st.error(f"Transcription failed: {e}")
-
-# Text: process once per new command string
-if user_cmd and user_cmd != st.session_state.last_processed_cmd:
-    st.session_state.last_processed_cmd = user_cmd   # mark as processed
-    _process_and_apply(user_cmd, source_hint="text")
-    st.session_state.prompt_text = ""                # clear input box
-    st.rerun()                                       # rerun AFTER applying text command
