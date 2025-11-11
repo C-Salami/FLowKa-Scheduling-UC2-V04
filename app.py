@@ -723,6 +723,9 @@ def _process_and_apply(cmd_text: str, *, source_hint: str = None):
         st.error(f"⚠️ Error: {e}")
 
 
+
+
+
 # ============================ VOICE + TEXT PROMPT BAR =========================
 
 st.markdown("---")
@@ -732,17 +735,16 @@ with prompt_container:
     c1, c2 = st.columns([0.82, 0.18])
 
     with c1:
-        st.markdown("**🧠 Command**")
         user_cmd = st.text_input(
-            "Type: delay / advance / swap orders…",
+            "Command / prompt",
             key="prompt_text",
-            label_visibility="collapsed",
+            placeholder="Delay / Advance / Swap orders...",
+            label_visibility="visible",
         )
 
     with c2:
         st.markdown(
-            "<div style='text-align:right; font-size:0.8rem; "
-            "margin-bottom:0.25rem;'>🎤 Voice</div>",
+            "<div style='margin-top: 1.85rem;'></div>",
             unsafe_allow_html=True,
         )
         rec = mic_recorder(
@@ -751,7 +753,7 @@ with prompt_container:
             key="voice_mic",
             just_once=False,
             format="wav",
-            use_container_width=False,
+            use_container_width=True,
         )
 
 # Voice: one shot per unique audio fingerprint
